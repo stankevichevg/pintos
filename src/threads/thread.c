@@ -41,6 +41,9 @@ static struct thread *initial_thread;
 /** Lock used by allocate_tid(). */
 static struct lock tid_lock;
 
+/** Lock to access ready list from different threads */
+static struct lock ready_list_lock;
+
 /** Stack frame for kernel_thread(). */
 struct kernel_thread_frame 
   {
@@ -72,6 +75,7 @@ static void init_thread (struct thread *, const char *name, int priority);
 static bool is_thread (struct thread *) UNUSED;
 static void *alloc_frame (struct thread *, size_t size);
 static void schedule (void);
+static void preempt (struct thread *);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
 
@@ -94,6 +98,7 @@ thread_init (void)
   ASSERT (intr_get_level () == INTR_OFF);
 
   lock_init (&tid_lock);
+  lock_init (&ready_list_lock);
 
   list_init (&ready_list);
   list_init (&sleep_list);
@@ -223,6 +228,9 @@ thread_create (const char *name, int priority,
   /* Add to run queue. */
   thread_unblock (t);
 
+  // preempt if needed
+  preempt (t);
+
   return tid;
 }
 
@@ -259,9 +267,27 @@ thread_unblock (struct thread *t)
 
   old_level = intr_disable ();
   ASSERT (t->status == THREAD_BLOCKED);
-  list_push_back (&ready_list, &t->elem);
+  list_insert_ordered (&ready_list, &t->elem, thread_priority_higher, NULL);
   t->status = THREAD_READY;
   intr_set_level (old_level);
+}
+
+bool
+thread_priority_higher (const struct list_elem *a_, const struct list_elem *b_, void *aux UNUSED) 
+{
+  const struct thread *a = list_entry (a_, struct thread, elem);
+  const struct thread *b = list_entry (b_, struct thread, elem);
+  return a->priority > b->priority;
+}
+
+static void 
+preempt (struct thread *t)
+{
+  struct thread *cur_thread = thread_current ();
+  if (t->priority > cur_thread->priority)
+  {
+    thread_yield ();
+  }
 }
 
 void 
@@ -348,7 +374,7 @@ thread_yield (void)
 
   old_level = intr_disable ();
   if (cur != idle_thread) 
-    list_push_back (&ready_list, &cur->elem);
+    list_insert_ordered (&ready_list, &cur->elem, thread_priority_higher, NULL);
   cur->status = THREAD_READY;
   schedule ();
   intr_set_level (old_level);
@@ -376,6 +402,11 @@ void
 thread_set_priority (int new_priority) 
 {
   thread_current ()->priority = new_priority;
+  // reorder the ready list
+  lock_acquire (&ready_list_lock);
+  list_sort(&ready_list, thread_priority_higher, NULL);
+  lock_release (&ready_list_lock);
+  thread_yield ();
 }
 
 /** Returns the current thread's priority. */
