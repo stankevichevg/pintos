@@ -24,6 +24,10 @@
    that are ready to run but not actually running. */
 static struct list ready_list;
 
+/** List of processes in THREAD_BLOCK state parked to sleep, that is, processes
+   that are waiting specified number of timer ticks. */
+static struct list sleep_list;
+
 /** List of all processes.  Processes are added to this list
    when they are first scheduled and removed when they exit. */
 static struct list all_list;
@@ -90,7 +94,9 @@ thread_init (void)
   ASSERT (intr_get_level () == INTR_OFF);
 
   lock_init (&tid_lock);
+
   list_init (&ready_list);
+  list_init (&sleep_list);
   list_init (&all_list);
 
   /* Set up a thread structure for the running thread. */
@@ -123,6 +129,7 @@ void
 thread_tick (void) 
 {
   struct thread *t = thread_current ();
+  struct list_elem *element;
 
   /* Update statistics. */
   if (t == idle_thread)
@@ -133,6 +140,21 @@ thread_tick (void)
 #endif
   else
     kernel_ticks++;
+
+  for (element = list_begin (&sleep_list); element != list_end (&sleep_list);)
+  {
+    t = list_entry (element, struct thread, elem);
+    t->ticks_to_sleep--;
+    if (t->ticks_to_sleep == 0)
+    {
+      element = list_remove (element);
+      thread_unblock (t);
+    }
+    else
+    {
+      element = list_next(element);
+    }
+  }
 
   /* Enforce preemption. */
   if (++thread_ticks >= TIME_SLICE)
@@ -240,6 +262,24 @@ thread_unblock (struct thread *t)
   list_push_back (&ready_list, &t->elem);
   t->status = THREAD_READY;
   intr_set_level (old_level);
+}
+
+void 
+thread_sleep (int64_t ticks)
+{
+  ASSERT (!intr_context ());
+  ASSERT (intr_get_level () == INTR_OFF);
+
+  if (ticks > 0)
+  {
+    struct thread *t = thread_current ();
+    // 1. set slip ticks for current thread
+    t->ticks_to_sleep = ticks;
+    // 2. put current thread to a new list of sleeping threads
+    list_push_back (&sleep_list, &t->elem);
+    // 3. thread_block() for current thread
+    thread_block();
+  }
 }
 
 /** Returns the name of the running thread. */
